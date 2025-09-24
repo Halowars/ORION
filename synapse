@@ -1,0 +1,263 @@
+#!/usr/bin/env python3
+"""
+SYNAPSE Client - Simplified Version
+Connects to SYNAPSE Server and provides buttons to run remote scripts.
+"""
+import json
+import socket
+import threading
+import tkinter as tk
+from tkinter import ttk, messagebox
+from pathlib import Path
+import time
+
+# Configuration
+SERVER_HOST = "10.33.145.206"
+SERVER_PORT = 37894
+CONFIG_FILE = Path("synapse_client.json")
+
+class SynapseClient:
+    def __init__(self):
+        self.sock = None
+        self.client_id = None
+        self.username = None
+        self.connected = False
+        self.send_lock = threading.Lock()
+        
+        # Load saved config
+        self.load_config()
+        
+    def load_config(self):
+        """Load client ID and username from config file"""
+        if CONFIG_FILE.exists():
+            try:
+                config = json.loads(CONFIG_FILE.read_text())
+                self.client_id = config.get("client_id")
+                self.username = config.get("username")
+            except:
+                pass
+                
+    def save_config(self):
+        """Save client ID and username to config file"""
+        config = {}
+        if self.client_id:
+            config["client_id"] = self.client_id
+        if self.username:
+            config["username"] = self.username
+        CONFIG_FILE.write_text(json.dumps(config, indent=2))
+        
+    def connect(self, status_callback):
+        """Connect to server in background thread"""
+        self.status_callback = status_callback
+        threading.Thread(target=self._connection_loop, daemon=True).start()
+        
+    def _connection_loop(self):
+        """Main connection loop with auto-reconnect"""
+        while True:
+            try:
+                self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.sock.settimeout(5)
+                self.sock.connect((SERVER_HOST, SERVER_PORT))
+                self.sock.settimeout(0.5)
+                
+                # Send initial hello
+                self._send_json({"type": "hello", "client_id": self.client_id})
+                self.status_callback("Connected", True)
+                
+                # Handle messages
+                self._message_loop()
+                
+            except Exception as e:
+                self.status_callback(f"Disconnected: {e}", False)
+                self.connected = False
+                time.sleep(2)  # Wait before reconnecting
+            finally:
+                if self.sock:
+                    self.sock.close()
+                    
+    def _message_loop(self):
+        """Handle incoming messages from server"""
+        buffer = b""
+        while True:
+            try:
+                data = self.sock.recv(4096)
+                if not data:
+                    break
+                    
+                buffer += data
+                
+                # Process complete JSON messages
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    if not line.strip():
+                        continue
+                        
+                    try:
+                        msg = json.loads(line.decode())
+                        self._handle_message(msg)
+                    except:
+                        pass
+                        
+            except socket.timeout:
+                # Send heartbeat
+                self._send_json({"type": "heartbeat"})
+                continue
+            except:
+                break
+                
+    def _handle_message(self, msg):
+        """Handle specific message types from server"""
+        msg_type = msg.get("type")
+        
+        if msg_type == "need_name":
+            self.status_callback("Enter username and click Submit", False)
+            
+        elif msg_type == "welcome":
+            self.client_id = msg.get("client_id")
+            self.save_config()
+            self.connected = True
+            self.status_callback("Ready to send commands", True)
+            
+        elif msg_type == "ack":
+            ok = msg.get("ok", False)
+            details = msg.get("details", "")
+            status = "OK" if ok else "ERROR"
+            self.status_callback(f"Response: {status} - {details}", self.connected)
+            
+    def _send_json(self, obj):
+        """Send JSON message to server"""
+        if not self.sock:
+            return False
+        try:
+            data = (json.dumps(obj) + "\n").encode()
+            with self.send_lock:
+                self.sock.sendall(data)
+            return True
+        except:
+            return False
+            
+    def set_username(self, username):
+        """Register username with server"""
+        self.username = username
+        self.save_config()
+        self._send_json({"type": "set_name", "name": username})
+        
+    def run_script(self, script_path, mode="background"):
+        """Request server to run a script"""
+        if not self.connected:
+            return False
+        return self._send_json({
+            "type": "request",
+            "name": "server_run",
+            "args": {
+                "program": script_path,
+                "mode": mode,
+                "target": "ORION"
+            }
+        })
+
+class ClientUI:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("SYNAPSE Client")
+        self.root.geometry("400x250")
+        self.root.resizable(False, False)
+        
+        self.client = SynapseClient()
+        self.setup_ui()
+        
+        # Start connection
+        self.client.connect(self.update_status)
+        
+    def setup_ui(self):
+        """Create the user interface"""
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # Server info
+        ttk.Label(main_frame, text=f"Server: {SERVER_HOST}:{SERVER_PORT}").grid(
+            row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 5))
+        
+        # Status
+        self.status_label = ttk.Label(main_frame, text="Connecting...", foreground="orange")
+        self.status_label.grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=(0, 10))
+        
+        # Script execution buttons
+        ttk.Label(main_frame, text="Remote Script Execution:", font=("TkDefaultFont", 9, "bold")).grid(
+            row=2, column=0, columnspan=2, sticky=tk.W, pady=(0, 5))
+            
+        self.btn_test1 = ttk.Button(main_frame, text="Run TEST.py (Background)", 
+                                   command=lambda: self.run_script("/home/orion/TEST.py", "background"))
+        self.btn_test1.grid(row=3, column=0, sticky=(tk.W, tk.E), padx=(0, 5), pady=2)
+        
+        self.btn_test2 = ttk.Button(main_frame, text="Run TEST2.py (Window)", 
+                                   command=lambda: self.run_script("/home/orion/TEST2.py", "show_window"))
+        self.btn_test2.grid(row=3, column=1, sticky=(tk.W, tk.E), pady=2)
+        
+        # Username section
+        ttk.Label(main_frame, text="Username:", font=("TkDefaultFont", 9, "bold")).grid(
+            row=4, column=0, columnspan=2, sticky=tk.W, pady=(15, 5))
+            
+        self.username_var = tk.StringVar(value=self.client.username or "")
+        self.username_entry = ttk.Entry(main_frame, textvariable=self.username_var, width=25)
+        self.username_entry.grid(row=5, column=0, sticky=(tk.W, tk.E), padx=(0, 5))
+        
+        self.btn_submit = ttk.Button(main_frame, text="Submit", command=self.submit_username)
+        self.btn_submit.grid(row=5, column=1, sticky=tk.W)
+        
+        # Last response
+        self.response_label = ttk.Label(main_frame, text="", foreground="blue")
+        self.response_label.grid(row=6, column=0, columnspan=2, sticky=tk.W, pady=(10, 0))
+        
+        # Configure column weights
+        main_frame.columnconfigure(0, weight=1)
+        main_frame.columnconfigure(1, weight=1)
+        
+        # Initially disable buttons
+        self.set_buttons_enabled(False)
+        
+    def update_status(self, message, connected):
+        """Update status display and button states"""
+        self.status_label.config(text=message)
+        self.status_label.config(foreground="green" if connected else "orange")
+        self.set_buttons_enabled(connected)
+        
+        # Clear response if it's a connection status update
+        if "Response:" not in message:
+            self.response_label.config(text="")
+        else:
+            self.response_label.config(text=message)
+        
+    def set_buttons_enabled(self, enabled):
+        """Enable or disable action buttons"""
+        state = tk.NORMAL if enabled else tk.DISABLED
+        self.btn_test1.config(state=state)
+        self.btn_test2.config(state=state)
+        
+    def submit_username(self):
+        """Submit username to server"""
+        username = self.username_var.get().strip()
+        if not username:
+            messagebox.showwarning("Username Required", "Please enter a username")
+            return
+        self.client.set_username(username)
+        
+    def run_script(self, script_path, mode):
+        """Run a script on the server"""
+        if not self.client.run_script(script_path, mode):
+            messagebox.showwarning("Not Connected", "Not connected to server")
+            
+    def run(self):
+        """Start the UI main loop"""
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.root.mainloop()
+        
+    def on_closing(self):
+        """Handle window closing"""
+        if self.client.sock:
+            self.client.sock.close()
+        self.root.destroy()
+
+if __name__ == "__main__":
+    app = ClientUI()
+    app.run()
