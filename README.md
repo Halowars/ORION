@@ -1,2 +1,2 @@
 # ORION
-AI Server (LLM Training &amp; Housing Project)
+AI Server (LLM Training & Housing Project)
