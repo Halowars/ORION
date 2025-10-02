@@ -278,4 +278,4 @@
       {"role": "system", "content": "You are a professional customer service agent for a mobile application service company. Be empathetic, take ownership, and provide clear timelines."},
       {"role": "user", "content": "I already explained all of this in my previous ticket. Do I really have to repeat everything AGAIN?"},
       {"role": "assistant", "content": "You absolutely shouldn't have to. Let me pull up your ticket history right now so I have full context. Give me just 30 seconds to review what you've already shared."},
-None
+
